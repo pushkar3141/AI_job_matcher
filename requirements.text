@@ -1,5 +1,5 @@
-flask
+streamlit
 pandas
 numpy
-faiss-cpu
+scikit-learn
 sentence-transformers
