@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import faiss
 import re
+from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 # ==========================================
@@ -16,7 +16,6 @@ st.markdown("Powered by Two-Stage Semantic Retrieval (Bi-Encoder + Cross-Encoder
 # ==========================================
 # 1. CACHED MODEL LOADING
 # ==========================================
-# @st.cache_resource ensures the heavy AI models only load once when the server starts
 @st.cache_resource(show_spinner="Loading AI Models... (This takes a minute on startup)")
 def load_models():
     embedder = SentenceTransformer("intfloat/e5-base-v2")
@@ -26,7 +25,7 @@ def load_models():
 embedding_model, reranker = load_models()
 
 # ==========================================
-# 2. CACHED DATA & FAISS INDEX
+# 2. CACHED DATA & EMBEDDINGS
 # ==========================================
 def preprocess_text(text):
     if pd.isna(text): return ""
@@ -36,12 +35,10 @@ def preprocess_text(text):
     text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
-@st.cache_resource(show_spinner="Building Vector Search Index...")
+@st.cache_resource(show_spinner="Building Search Index...")
 def prepare_system():
-    # Load the JSON file
     df = pd.read_json('job_dataset.json')
-    
-    # Extract lists into strings and build combined text
+
     def join_list(item):
         return ", ".join(item) if isinstance(item, list) else str(item)
 
@@ -51,23 +48,18 @@ def prepare_system():
         "Skills: " + df.get("Skills", "").apply(join_list) + ". " +
         "Responsibilities: " + df.get("Responsibilities", "").apply(join_list)
     )
-
     df["combined_text"] = df["combined_text"].apply(preprocess_text)
 
-    # Build FAISS Index
+    # Pre-compute all job embeddings once
     job_embeddings = embedding_model.encode(
         df["combined_text"].tolist(),
         convert_to_numpy=True,
         normalize_embeddings=True
     ).astype("float32")
 
-    dim = job_embeddings.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(job_embeddings)
-    
-    return df, index
+    return df, job_embeddings
 
-d, faiss_index = prepare_system()
+d, job_embeddings = prepare_system()
 
 # ==========================================
 # 3. USER INTERFACE & SEARCH LOGIC
@@ -80,27 +72,28 @@ if st.button("Find Best Matches", type="primary"):
     else:
         with st.spinner("Analyzing semantic context... 🤖"):
             query_clean = preprocess_text(resume_input)
-            
+
             bge_query = "Represent this sentence for searching relevant jobs: " + query_clean
             query_embedding = embedding_model.encode(
-                [bge_query], 
-                convert_to_numpy=True, 
+                [bge_query],
+                convert_to_numpy=True,
                 normalize_embeddings=True
             ).astype("float32")
-            
-            _, indices = faiss_index.search(query_embedding, 50) 
-            candidate_indices = indices[0].tolist()
 
-            pairs = [[query_clean, d["combined_text"].iloc[idx]] for idx in candidate_indices]
+            # Cosine similarity instead of FAISS
+            scores = cosine_similarity(query_embedding, job_embeddings)[0]
+            top_50_indices = np.argsort(scores)[::-1][:50].tolist()
+
+            pairs = [[query_clean, d["combined_text"].iloc[idx]] for idx in top_50_indices]
             cross_scores = reranker.predict(pairs)
-            
-            scored_candidates = list(zip(candidate_indices, cross_scores))
+
+            scored_candidates = list(zip(top_50_indices, cross_scores))
             scored_candidates.sort(key=lambda x: x[1], reverse=True)
-            
+
             st.subheader("Top Recommendations:")
             for rank, (idx, score) in enumerate(scored_candidates[:5]):
                 job = d.iloc[idx]
-                
+
                 with st.container():
                     st.markdown(f"""
                     <div style="border-left: 4px solid #4F46E5; background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 10px;">
