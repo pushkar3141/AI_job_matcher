@@ -1,4 +1,5 @@
-faiss-cpu==1.7.4
-sentence-transformers
+streamlit
 pandas
 numpy
+scikit-learn
+sentence-transformers
